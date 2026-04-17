@@ -1,0 +1,18 @@
+exporter_port:    9105
+collect_interval: 300      # giay — 5 phut
+
+vcenters:
+  - host:       vcenter1.company.com
+    username:   monitor@vsphere.local
+    password:   "P@ssw0rd1"
+    ignore_ssl: true
+
+  - host:       vcenter2.company.com
+    username:   monitor@vsphere.local
+    password:   "P@ssw0rd2"
+    ignore_ssl: true
+
+  - host:       vcenter3.company.com
+    username:   monitor@vsphere.local
+    password:   "P@ssw0rd3"
+    ignore_ssl: false
