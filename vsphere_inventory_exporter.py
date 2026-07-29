@@ -55,6 +55,20 @@ collect_duration = Gauge('vsphere_collect_duration_seconds',
 collect_success  = Gauge('vsphere_collect_success',
     'Collection success (1=ok, 0=fail)', ['vcenter'])
 
+# Cac Gauge co label dong (vm_name, power_state, ...) can duoc clear
+# truoc moi chu ky collect, neu khong Prometheus se giu lai cac to hop
+# label cu (vd power_state khac) da bien mat -> sinh ra series "duplicate".
+DYNAMIC_GAUGES = [
+    folder_vcpu_alloc, folder_ram_alloc, folder_ram_used,
+    folder_disk_alloc, folder_disk_used, folder_vm_total, folder_vm_on,
+    vm_vcpu, vm_cpu_mhz, vm_ram_alloc, vm_ram_used,
+    vm_disk_alloc, vm_disk_used,
+]
+
+def clear_dynamic_metrics():
+    for g in DYNAMIC_GAUGES:
+        g.clear()
+
 def get_folder_path(vm):
     path = []
     obj  = vm.parent
@@ -174,6 +188,9 @@ if __name__ == '__main__':
     start_http_server(port)
     while True:
         log.info('Starting collection cycle...')
+        # Xoa toan bo series cu (vm_name/power_state/folder...) truoc khi
+        # collect lai, tranh giu lai to hop label da khong con dung nua.
+        clear_dynamic_metrics()
         for vc in vcenters: collect_vcenter(vc)
         log.info(f'Done. Sleeping {interval}s...')
         time.sleep(interval)
