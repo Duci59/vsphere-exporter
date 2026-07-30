@@ -104,12 +104,18 @@ def collect_vcenter(cfg):
         log.error(f'[{host}] Connection failed: {e}')
         collect_success.labels(vcenter=host).set(0)
         return
+    container = None
     try:
         content   = si.RetrieveContent()
         container = content.viewManager.CreateContainerView(
             content.rootFolder, [vim.VirtualMachine], True)
         folder_stats = {}
         for vm in container.view:
+            # Dung _moId (luu san o client, khong can goi RPC) de log khi
+            # loi xay ra, tranh truong hop VM da bi xoa: goi vm.name trong
+            # khoi except cung se RPC va nem loi lan 2 -> thoat ca vong for,
+            # mat toan bo du liệu da thu thap cua vCenter nay trong chu ky.
+            moid = getattr(vm, '_moId', 'unknown')
             try:
                 folder = get_folder_path(vm)
                 dc     = get_datacenter(vm)
@@ -149,7 +155,7 @@ def collect_vcenter(cfg):
                 s['total']      += 1
                 if state == 'poweredOn': s['on'] += 1
             except Exception as e:
-                log.warning(f'[{host}] Skip {vm.name}: {e}')
+                log.warning(f'[{host}] Skip VM ({moid}): {e}')
         for (folder, dc), s in folder_stats.items():
             fl = dict(folder=folder, datacenter=dc, vcenter=host)
             folder_vcpu_alloc.labels(**fl).set(s['vcpu'])
@@ -159,7 +165,6 @@ def collect_vcenter(cfg):
             folder_disk_used.labels(**fl).set(round(s['disk_used'],2))
             folder_vm_total.labels(**fl).set(s['total'])
             folder_vm_on.labels(**fl).set(s['on'])
-        container.Destroy()
         elapsed = round(time.time() - t0, 2)
         collect_success.labels(vcenter=host).set(1)
         collect_duration.labels(vcenter=host).set(elapsed)
@@ -168,6 +173,10 @@ def collect_vcenter(cfg):
         log.error(f'[{host}] Error: {e}')
         collect_success.labels(vcenter=host).set(0)
     finally:
+        if container is not None:
+            try: container.Destroy()
+            except Exception as e:
+                log.warning(f'[{host}] Could not destroy container view: {e}')
         try: Disconnect(si)
         except: pass
 
