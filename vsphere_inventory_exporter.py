@@ -26,6 +26,9 @@ LABELS_FOLDER = ['folder', 'datacenter', 'vcenter']
 # bang on(uuid) thay vi on(vmname) -> tranh trung ten VM giua cac folder.
 LABELS_VM     = ['vmname', 'folder', 'datacenter', 'vcenter', 'power_state',
                   'uuid', 'moid']
+# Label cho metric muc vCenter (tong hop toan bo host/datastore trong 1
+# vCenter) - dung de ve panel "Capacity and Usage" kieu vSphere Client.
+LABELS_VC     = ['vcenter']
 
 folder_vcpu_alloc  = Gauge('vsphere_folder_vcpu_allocated',
     'Total vCPU allocated in folder', LABELS_FOLDER)
@@ -56,6 +59,27 @@ vm_disk_alloc = Gauge('vsphere_vm_disk_allocated_gb',
     'Disk allocated per VM (GB)', LABELS_VM)
 vm_disk_used  = Gauge('vsphere_vm_disk_used_gb',
     'Disk used per VM (GB)', LABELS_VM)
+
+# --- Metric muc vCenter: khop voi panel "Capacity and Usage" cua vSphere
+# Client (CPU GHz, Memory GB, Storage GB - used/free/capacity). Lay tu
+# tong hop HOST (CPU/Memory - vi capacity vat ly nam o host, khong phai
+# VM) va DATASTORE (Storage), khong phai cong don tu VM.
+vc_cpu_capacity_mhz = Gauge('vsphere_vcenter_cpu_capacity_mhz',
+    'Total CPU capacity across all hosts (MHz)', LABELS_VC)
+vc_cpu_used_mhz     = Gauge('vsphere_vcenter_cpu_used_mhz',
+    'Total CPU used across all hosts (MHz)', LABELS_VC)
+vc_mem_capacity_gb  = Gauge('vsphere_vcenter_mem_capacity_gb',
+    'Total memory capacity across all hosts (GB)', LABELS_VC)
+vc_mem_used_gb      = Gauge('vsphere_vcenter_mem_used_gb',
+    'Total memory used across all hosts (GB)', LABELS_VC)
+vc_disk_capacity_gb = Gauge('vsphere_vcenter_disk_capacity_gb',
+    'Total datastore capacity across vCenter (GB)', LABELS_VC)
+vc_disk_used_gb     = Gauge('vsphere_vcenter_disk_used_gb',
+    'Total datastore used across vCenter (GB)', LABELS_VC)
+vc_host_total       = Gauge('vsphere_vcenter_host_total',
+    'Total ESXi hosts in vCenter', LABELS_VC)
+vc_host_connected   = Gauge('vsphere_vcenter_host_connected',
+    'Connected ESXi hosts in vCenter', LABELS_VC)
 
 collect_duration = Gauge('vsphere_collect_duration_seconds',
     'Collection duration per vCenter', ['vcenter'])
@@ -102,6 +126,81 @@ def connect(cfg):
         user=cfg['username'], pwd=cfg['password'],
         sslContext=ctx)
 
+def collect_vcenter_summary(content, host):
+    """
+    Tong hop CPU/Memory tu tat ca HOST va Storage tu tat ca DATASTORE
+    trong 1 vCenter. Day chinh la so lieu hien thi o panel "Capacity and
+    Usage" tren vSphere Client (khac voi cong don tu VM, vi VM khong
+    phan anh dung capacity vat ly cua ha tang).
+    """
+    # --- CPU + Memory: cong don tu host ---
+    host_view = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.HostSystem], True)
+    try:
+        cpu_cap_mhz = 0
+        cpu_used_mhz = 0
+        mem_cap_mb = 0
+        mem_used_mb = 0
+        total_hosts = 0
+        connected_hosts = 0
+        for h in host_view.view:
+            total_hosts += 1
+            try:
+                if h.runtime.connectionState != vim.HostSystem.ConnectionState.connected:
+                    continue
+                connected_hosts += 1
+                hw  = h.summary.hardware
+                qs  = h.summary.quickStats
+                # capacity CPU (MHz) = so lg core * tan so CPU (MHz/core)
+                cpu_cap_mhz  += hw.numCpuCores * hw.cpuMhz
+                cpu_used_mhz += qs.overallCpuUsage or 0
+                mem_cap_mb   += hw.memorySize / 1048576  # bytes -> MB
+                mem_used_mb  += qs.overallMemoryUsage or 0  # da la MB
+            except Exception as e:
+                log.warning(f'[{host}] Skip host in vcenter summary: {e}')
+    finally:
+        host_view.Destroy()
+
+    # --- Storage: cong don tu datastore, dedupe theo _moId vi 1
+    # datastore co the duoc nhieu host/cluster share ---
+    ds_view = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.Datastore], True)
+    try:
+        disk_cap_gb = 0.0
+        disk_used_gb = 0.0
+        seen = set()
+        for ds in ds_view.view:
+            moid = getattr(ds, '_moId', None)
+            if moid is None or moid in seen:
+                continue
+            seen.add(moid)
+            try:
+                s = ds.summary
+                if not s.accessible:
+                    continue
+                cap_gb  = s.capacity / 1073741824
+                free_gb = s.freeSpace / 1073741824
+                disk_cap_gb  += cap_gb
+                disk_used_gb += (cap_gb - free_gb)
+            except Exception as e:
+                log.warning(f'[{host}] Skip datastore in vcenter summary: {e}')
+    finally:
+        ds_view.Destroy()
+
+    vc_cpu_capacity_mhz.labels(vcenter=host).set(cpu_cap_mhz)
+    vc_cpu_used_mhz.labels(vcenter=host).set(cpu_used_mhz)
+    vc_mem_capacity_gb.labels(vcenter=host).set(round(mem_cap_mb/1024, 2))
+    vc_mem_used_gb.labels(vcenter=host).set(round(mem_used_mb/1024, 2))
+    vc_disk_capacity_gb.labels(vcenter=host).set(round(disk_cap_gb, 2))
+    vc_disk_used_gb.labels(vcenter=host).set(round(disk_used_gb, 2))
+    vc_host_total.labels(vcenter=host).set(total_hosts)
+    vc_host_connected.labels(vcenter=host).set(connected_hosts)
+
+    log.info(f'[{host}] Summary — CPU {cpu_used_mhz}/{cpu_cap_mhz} MHz, '
+             f'RAM {round(mem_used_mb/1024,1)}/{round(mem_cap_mb/1024,1)} GB, '
+             f'Disk {round(disk_used_gb,1)}/{round(disk_cap_gb,1)} GB, '
+             f'Hosts {connected_hosts}/{total_hosts}')
+
 def collect_vcenter(cfg):
     host = cfg['host']
     t0   = time.time()
@@ -114,6 +213,13 @@ def collect_vcenter(cfg):
     container = None
     try:
         content   = si.RetrieveContent()
+
+        # Tong hop CPU/Memory/Storage muc vCenter (panel "Capacity and Usage")
+        try:
+            collect_vcenter_summary(content, host)
+        except Exception as e:
+            log.error(f'[{host}] vCenter summary collection failed: {e}')
+
         container = content.viewManager.CreateContainerView(
             content.rootFolder, [vim.VirtualMachine], True)
         folder_stats = {}
