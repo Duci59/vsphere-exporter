@@ -54,7 +54,15 @@ vm_cpu_cap_mhz = Gauge('vsphere_vm_cpu_capacity_mhz',
 vm_ram_alloc  = Gauge('vsphere_vm_ram_allocated_gb',
     'RAM allocated per VM (GB)', LABELS_VM)
 vm_ram_used   = Gauge('vsphere_vm_ram_used_gb',
-    'RAM used per VM (GB)', LABELS_VM)
+    'RAM used per VM (GB) — Active Guest Memory (mem.active.average / quickStats.guestMemoryUsage)', LABELS_VM)
+# GAUGE MOI: khop voi "VM Consumed" tren panel Virtual Machine Memory cua
+# vSphere Client. Dung field quickStats.hostMemoryUsage (counter
+# mem.consumed.average) — la RAM vat ly tren host ma VM dang chiem dung,
+# khac voi guestMemoryUsage (Active Guest Memory) o gauge vm_ram_used cu.
+# Giu gauge cu nguyen ven, khong ghi de, de khong pha vo dashboard/alert
+# dang dung metric vsphere_vm_ram_used_gb.
+vm_ram_consumed = Gauge('vsphere_vm_ram_consumed_gb',
+    'RAM consumed per VM (GB) — matches vSphere "VM Consumed" (mem.consumed.average / quickStats.hostMemoryUsage)', LABELS_VM)
 vm_disk_alloc = Gauge('vsphere_vm_disk_allocated_gb',
     'Disk allocated per VM (GB)', LABELS_VM)
 vm_disk_used  = Gauge('vsphere_vm_disk_used_gb',
@@ -93,7 +101,7 @@ DYNAMIC_GAUGES = [
     folder_vcpu_alloc, folder_ram_alloc, folder_ram_used,
     folder_disk_alloc, folder_disk_used, folder_vm_total, folder_vm_on,
     vm_vcpu, vm_cpu_mhz, vm_cpu_cap_mhz, vm_ram_alloc, vm_ram_used,
-    vm_disk_alloc, vm_disk_used,
+    vm_ram_consumed, vm_disk_alloc, vm_disk_used,
 ]
 
 def clear_dynamic_metrics():
@@ -249,8 +257,16 @@ def collect_vcenter(cfg):
                 # vCenter tinh tu tan so CPU that cua host + so vCPU + limit.
                 # Dung lam mau so de tinh CPU % dung, thay vi doan MHz/core.
                 cpu_cap_mhz = vm.runtime.maxCpuUsage or 0
+                # ram_used = Active Guest Memory (mem.active.average) — RAM
+                # guest OS dang active dung, theo uoc luong cua VMkernel.
                 ram_used  = round(
                     (vm.summary.quickStats.guestMemoryUsage or 0)/1024, 3)
+                # ram_consumed = VM Consumed (mem.consumed.average) — RAM
+                # vat ly tren host ma VM dang chiem dung (gom ca overhead).
+                # Day la con so hien thi o panel "Virtual Machine Memory ->
+                # VM Consumed" tren vSphere Client.
+                ram_consumed = round(
+                    (vm.summary.quickStats.hostMemoryUsage or 0)/1024, 3)
                 # disk_used = committed = byte da ghi thuc te (luon duong)
                 disk_used = round(
                     vm.summary.storage.committed/1073741824, 3)
@@ -262,6 +278,7 @@ def collect_vcenter(cfg):
                 vm_cpu_cap_mhz.labels(**vml).set(cpu_cap_mhz)
                 vm_ram_alloc.labels(**vml).set(ram_alloc)
                 vm_ram_used.labels(**vml).set(ram_used)
+                vm_ram_consumed.labels(**vml).set(ram_consumed)
                 vm_disk_alloc.labels(**vml).set(disk_alloc)
                 vm_disk_used.labels(**vml).set(disk_used)
                 key = (folder, dc)
